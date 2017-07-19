@@ -1,0 +1,4 @@
+﻿------ Build started: Project: AE_YSQPOS_SV01, Configuration: Debug x86 ------
+D:\Jeeva\Abeo Projects\1 Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\modCommon.vb(387) : warning BC42104: Variable 'oCon' is used before it has been assigned a value. A null reference exception could result at runtime.
+  AE_YSQPOS_SV01 -> D:\Jeeva\Abeo Projects\1 Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\bin\Debug\AE_YSQPOS_SV01.exe
+========== Build: 1 succeeded or up-to-date, 0 failed, 0 skipped ==========

@@ -2,6 +2,7 @@
 
     Private dtSalesTransDet As New DataTable
     Private dtCollectionDet As New DataTable
+    Private dtItemDetails As New DataTable
 
     Public Sub Start()
         Dim sFuncName As String = "Start()"
@@ -39,7 +40,7 @@
             sSql = "SELECT A.FileID,A.POSNo,A.POSOutlet,A.DocDate,ISNULL(A.TotalGrossAmt,0) [TotalGrossAmt],ISNULL(A.SvcCharge,0) [SvcCharge], " & _
                   " ISNULL(A.GST,0) [GST],ISNULL(A.Rounding,0) [Rounding],ISNULL(A.Excess,0) [Excess],ISNULL(A.Tips,0) [Tips], B.POSItemCode,B.POSDept, " & _
                   " B.DiscCode,B.DiscItem,B.SetMealCode,ISNULL(B.Price,0) [Price],ISNULL(B.Qty,0) [Qty],ISNULL(B.SubTotal,0) [SubTotal],A.Covers,ISNULL(B.DiscAmt,0) [DiscAmt],B.Adjustment " & _
-                  " FROM " & p_oCompDef.sIntDBName & ".dbo.SalesTransHeader A INNER JOIN " & p_oCompDef.sIntDBName & ".dbo.SalesTransDetails B ON B.FileID = A.FileID " & _
+                  " FROM " & p_oCompDef.sIntDBName & ".dbo.SalesTransHeader A LEFT JOIN " & p_oCompDef.sIntDBName & ".dbo.SalesTransDetails B ON B.FileID = A.FileID " & _
                   " WHERE ISNULL(A.ARDocEntry,'') = '' AND ISNULL(A.Status,'FAIL') = 'FAIL' AND A.RUpdated = 1 "
             If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sSql, sFuncName)
             dtSalesTransDet = ExecuteQueryReturnDataTable(sSql, p_oCompDef.sIntDBName)
@@ -84,11 +85,20 @@
                                     If p_oCompany.Connected Then
                                         Console.WriteLine("Connected to company " & p_oCompany.CompanyDB)
 
+                                        sSql = "SELECT T0.""ItemCode"",UPPER(T0.""ItemCode"") AS ""UpperItemCode"",T0.""U_RevType"",T0.""VatGourpSa"",T1.""U_CogsAct"" FROM ""OITM"" T0 INNER JOIN ""OITB"" T1 ON T1.""ItmsGrpCod"" = T0.""ItmsGrpCod"" "
+                                        If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing query " & sSql, sFuncName)
+                                        dtItemDetails = ExecuteQueryReturnDataTable(sSql, p_oCompany.CompanyDB)
+
                                         If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Calling StartTransaction() ", sFuncName)
                                         If StartTransaction(sErrDesc) <> RTN_SUCCESS Then Throw New ArgumentException(sErrDesc)
 
+                                        Dim sInvDocEntry As String = String.Empty
+
                                         If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Calling CreateARInvoice()", sFuncName)
-                                        If CreateARInvoice(oDvDataview, sErrDesc) <> RTN_SUCCESS Then
+                                        If CreateARReserveInvoice(oDvDataview, sInvDocEntry, sErrDesc) <> RTN_SUCCESS Then
+                                            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Calling RollbackTransaction()", sFuncName)
+                                            If RollbackTransaction(sErrDesc) <> RTN_SUCCESS Then Throw New ArgumentException(sErrDesc)
+                                        ElseIf CreateDoDraft(oDvDataview, sInvDocEntry, sErrDesc) <> RTN_SUCCESS Then
                                             If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Calling RollbackTransaction()", sFuncName)
                                             If RollbackTransaction(sErrDesc) <> RTN_SUCCESS Then Throw New ArgumentException(sErrDesc)
                                         Else
@@ -199,6 +209,629 @@
             Call WriteToLogFile(sErrDesc, sFuncName)
             If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Completed with ERROR", sFuncName)
             ProcessCollectionDetails = RTN_ERROR
+        End Try
+    End Function
+
+    Private Function CreateARReserveInvoice(ByVal oDv As DataView, ByRef sInvDocEntry As String, ByRef sErrDesc As String) As Long
+        Dim sFuncName As String = "CreateARReserveInvoice"
+        Dim sSQL As String = String.Empty
+        Dim sFileId As String = String.Empty
+        Dim sCardCode As String = String.Empty
+        Dim sPOSNo As String = String.Empty
+        Dim sPOSDept As String = String.Empty
+        Dim sOutlet As String = String.Empty
+        Dim sBranch As String = String.Empty
+        Dim sOcrCode As String = String.Empty
+        Dim sOcrCode2 As String = String.Empty
+        Dim sWhseCode As String = String.Empty
+        Dim sWhseBin As String = String.Empty
+        Dim sDocDate As String = String.Empty
+        Dim sDiscCode As String = String.Empty
+        Dim sBinLoc As String = String.Empty
+        Dim bIsLineAdded As Boolean = False
+        Dim oDs As New DataSet
+        Dim oRs As SAPbobsCOM.Recordset
+        oRs = p_oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset)
+
+        Try
+            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Starting Function", sFuncName)
+
+            Dim oDtGroup As DataTable = oDv.Table.DefaultView.ToTable(True, "FileID")
+            For i As Integer = 0 To oDtGroup.Rows.Count - 1
+                If Not (oDtGroup.Rows(i).Item(0).ToString.Trim() = String.Empty Or oDtGroup.Rows(i).Item(0).ToString.ToUpper().Trim() = "FILEID") Then
+                    oDv.RowFilter = "FileID = '" & oDtGroup.Rows(i).Item(0).ToString.Trim() & "' "
+                    sFileId = oDtGroup.Rows(i).Item(0).ToString.Trim()
+                    If oDv.Count > 0 Then
+                        Dim oDt As New DataTable
+                        oDt = oDv.ToTable()
+                        Dim oInvDv As DataView = New DataView(oDt)
+
+                        sOutlet = oDv(0)(2).ToString().Trim()
+
+                        Console.WriteLine("Processing File id " & sFileId & " for outlet " & sOutlet)
+
+                        If oInvDv.Count > 0 Then
+                            If p_oCompDef.sOutLetMapping = "Y" Then
+                                sSQL = "SELECT A.Entity,A.CardCode,A.SAPWhseCode,A.SAPBranch,A.OcrCode FROM " & p_oCompDef.sIntDBName & ".dbo.SAP_POS_OUTLET A WHERE A.POSOutletCode = '" & sOutlet & "' "
+                                If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sSQL, sFuncName)
+                                oDs = ExecuteSQLQueryDataset(sSQL, p_oCompDef.sIntDBName)
+                                If oDs.Tables(0).Rows.Count > 0 Then
+                                    sCardCode = oDs.Tables(0).Rows(0)("CardCode").ToString.Trim()
+                                    sWhseCode = oDs.Tables(0).Rows(0)("SAPWhseCode").ToString.Trim()
+                                    sBranch = oDs.Tables(0).Rows(0)("SAPBranch").ToString.Trim()
+                                    sOcrCode = oDs.Tables(0).Rows(0)("OcrCode").ToString.Trim()
+
+                                    sFileId = oDv(0)(0).ToString.Trim()
+                                    sPOSNo = oDv(0)(1).ToString.Trim()
+                                    sDocDate = oDv(0)(3).ToString.Trim()
+                                    Dim iIndex As Integer = sDocDate.IndexOf(" ")
+                                    Dim sDate As String = sDocDate.Substring(0, iIndex)
+                                    Dim dt As Date
+                                    Dim format() = {"dd/MM/yyyy", "d/M/yyyy", "dd-MM-yyyy", "dd.MM.yyyy", "yyyyMMdd", "MMddYYYY", "M/dd/yyyy", "MM/dd/YYYY"}
+                                    Date.TryParseExact(sDate, format, System.Globalization.DateTimeFormatInfo.InvariantInfo, Globalization.DateTimeStyles.None, dt)
+
+                                    sPOSDept = oDv(0)(11).ToString.Trim()
+                                    sSQL = "SELECT UPPER(OcrCode2) [OcrCode2],SAPBinLoc FROM " & p_oCompDef.sIntDBName & ".dbo.SAP_POS_DEPT WHERE POSOutletCode = '" & sOutlet.ToUpper() & "' AND UPPER(POSDept) = '" & sPOSDept.ToUpper() & "'"
+                                    If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sSQL, sFuncName)
+                                    oDs = New DataSet()
+                                    oDs = ExecuteSQLQueryDataset(sSQL, p_oCompDef.sIntDBName)
+                                    If oDs.Tables(0).Rows.Count > 0 Then
+                                        sOcrCode2 = oDs.Tables(0).Rows(0)("OcrCode2").ToString.Trim()
+                                        sWhseBin = oDs.Tables(0).Rows(0)("SAPBinLoc").ToString.Trim()
+                                    Else
+                                        sOcrCode2 = ""
+                                        sWhseBin = ""
+                                    End If
+
+                                    sSQL = "SELECT T0.""AbsEntry"" FROM ""OBIN"" T0 WHERE T0.""BinCode"" ='" & sWhseBin & "' "
+                                    If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sSQL, sFuncName)
+                                    oRs.DoQuery(sSQL)
+                                    If oRs.RecordCount > 0 Then
+                                        sBinLoc = oRs.Fields.Item("AbsEntry").Value
+                                    Else
+                                        sBinLoc = ""
+                                    End If
+
+                                    Dim sCustRefNo As String = String.Empty
+                                    Dim oArInvoice As SAPbobsCOM.Documents = Nothing
+                                    oArInvoice = p_oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oInvoices)
+
+                                    oArInvoice.WareHouseUpdateType = SAPbobsCOM.BoDocWhsUpdateTypes.dwh_CustomerOrders
+
+                                    sCustRefNo = sOutlet & "-" & dt.ToString("yyyyMMdd") & sPOSNo
+
+                                    oArInvoice.CardCode = sCardCode
+                                    oArInvoice.DocDate = dt
+                                    oArInvoice.NumAtCard = sCustRefNo
+                                    oArInvoice.BPL_IDAssignedToInvoice = sBranch
+                                    oArInvoice.UserFields.Fields.Item("U_FileID").Value = oDv(0)(0).ToString.Trim()
+                                    oArInvoice.UserFields.Fields.Item("U_POSNo").Value = oDv(0)(1).ToString.Trim()
+                                    oArInvoice.UserFields.Fields.Item("U_POSOutlet").Value = sOutlet
+                                    oArInvoice.UserFields.Fields.Item("U_Covers").Value = oDv(0)(18).ToString.Trim()
+
+                                    Dim iCount As Integer = 1
+
+                                    '********************NEW LOGIC STARTS****************
+                                    For j As Integer = 0 To oDv.Count - 1
+                                        Dim sItemCode As String = String.Empty
+                                        Dim sRevType As String = String.Empty
+                                        Dim sDiscType As String = String.Empty
+                                        Dim sVatGroup As String = String.Empty
+                                        Dim sAdjustment As String = String.Empty
+                                        Dim sCogsAcct As String = String.Empty
+
+                                        sItemCode = oDv(j)(10).ToString.Trim()
+                                        sDiscCode = oDv(j)(12).ToString.Trim()
+                                        sAdjustment = oDv(j)(20).ToString.Trim()
+
+                                        If sAdjustment <> "" Then
+                                            If sAdjustment.ToUpper() = "REFUND" Then
+                                                If iCount > 1 Then
+                                                    oArInvoice.Lines.Add()
+                                                End If
+                                                dtItemDetails.DefaultView.RowFilter = "UpperItemCode = '" & sItemCode.ToUpper() & "'"
+                                                If dtItemDetails.DefaultView.Count = 0 Then
+                                                    sErrDesc = "ItemCode not found in SAP/ItemCode :: " & sItemCode
+                                                    Console.WriteLine(sErrDesc)
+                                                    Call WriteToLogFile(sErrDesc, sFuncName)
+                                                    Throw New ArgumentException(sErrDesc)
+                                                Else
+                                                    sItemCode = dtItemDetails.DefaultView.Item(0)(0).ToString().Trim()
+                                                    sVatGroup = dtItemDetails.DefaultView.Item(0)(3).ToString().Trim()
+                                                End If
+
+                                                oArInvoice.Lines.ItemCode = sItemCode
+                                                oArInvoice.Lines.Quantity = CDbl(oDv(j)(16))
+                                                oArInvoice.Lines.Price = CDbl(oDv(j)(15))
+                                                oArInvoice.Lines.WarehouseCode = sWhseCode
+                                                If Not (sVatGroup = String.Empty) Then
+                                                    oArInvoice.Lines.VatGroup = sVatGroup
+                                                End If
+                                                If Not (sOcrCode = String.Empty) Then
+                                                    oArInvoice.Lines.CostingCode = sOcrCode
+                                                    oArInvoice.Lines.COGSCostingCode = sOcrCode
+                                                End If
+                                                If p_oCompDef.sRevDeptMapping = "Y" Then
+                                                    If Not (sOcrCode2 = String.Empty) Then
+                                                        oArInvoice.Lines.CostingCode2 = sOcrCode2
+                                                        oArInvoice.Lines.COGSCostingCode2 = sOcrCode2
+                                                    End If
+                                                End If
+                                                oArInvoice.Lines.LineTotal = CDbl(oDv(j)(17))
+                                                oArInvoice.Lines.UserFields.Fields.Item("U_Dept").Value = oDv(j)(11).ToString.Trim()
+                                                oArInvoice.Lines.UserFields.Fields.Item("U_DiscCode").Value = oDv(j)(12).ToString.Trim()
+                                                oArInvoice.Lines.UserFields.Fields.Item("U_DiscItem").Value = oDv(j)(13).ToString.Trim()
+                                                oArInvoice.Lines.UserFields.Fields.Item("U_SetMealCode").Value = oDv(j)(14).ToString.Trim()
+                                                oArInvoice.Lines.UserFields.Fields.Item("U_Adjustment").Value = oDv(0)(20).ToString.Trim()
+
+                                                If sBinLoc = String.Empty Then
+                                                    oArInvoice.Lines.BinAllocations.BinAbsEntry = 1
+                                                Else
+                                                    oArInvoice.Lines.BinAllocations.BinAbsEntry = sBinLoc
+                                                End If
+                                                oArInvoice.Lines.BinAllocations.Quantity = CDbl(oDv(j)(16))
+                                                oArInvoice.Lines.BinAllocations.AllowNegativeQuantity = SAPbobsCOM.BoYesNoEnum.tYES
+                                                oArInvoice.Lines.BinAllocations.Add()
+
+                                                'Extra line adding if adjustment code is REFUND
+                                                If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Adjustment code is " & sAdjustment.ToUpper & ". Adding new line", sFuncName)
+
+                                                oArInvoice.Lines.Add()
+                                                oArInvoice.Lines.ItemCode = sItemCode
+                                                oArInvoice.Lines.Quantity = CDbl(oDv(j)(16))
+                                                oArInvoice.Lines.Price = CDbl(oDv(j)(15))
+                                                oArInvoice.Lines.WarehouseCode = sWhseCode
+                                                oArInvoice.Lines.LineTotal = 0
+                                                If Not (sVatGroup = String.Empty) Then
+                                                    oArInvoice.Lines.VatGroup = sVatGroup
+                                                End If
+                                                If Not (p_oCompDef.sRefundGLAct = String.Empty) Then
+                                                    oArInvoice.Lines.AccountCode = p_oCompDef.sRefundGLAct
+                                                End If
+
+                                                If sBinLoc = String.Empty Then
+                                                    oArInvoice.Lines.BinAllocations.BinAbsEntry = 1
+                                                Else
+                                                    oArInvoice.Lines.BinAllocations.BinAbsEntry = sBinLoc
+                                                End If
+                                                oArInvoice.Lines.BinAllocations.Quantity = CDbl(oDv(j)(16))
+                                                oArInvoice.Lines.BinAllocations.AllowNegativeQuantity = SAPbobsCOM.BoYesNoEnum.tYES
+                                                oArInvoice.Lines.BinAllocations.Add()
+
+                                                iCount = iCount + 1
+                                                bIsLineAdded = True
+                                            Else
+                                                dtItemDetails.DefaultView.RowFilter = "UpperItemCode = '" & sAdjustment.ToUpper() & "'"
+                                                If dtItemDetails.DefaultView.Count = 0 Then
+                                                    sErrDesc = "ItemCode not found in SAP/ItemCode :: " & sAdjustment
+                                                    Console.WriteLine(sErrDesc)
+                                                    Call WriteToLogFile(sErrDesc, sFuncName)
+                                                    Throw New ArgumentException(sErrDesc)
+                                                Else
+                                                    sRevType = dtItemDetails.DefaultView.Item(0)(2).ToString().Trim()
+                                                    sVatGroup = dtItemDetails.DefaultView.Item(0)(3).ToString().Trim()
+                                                    sCogsAcct = dtItemDetails.DefaultView.Item(0)(4).ToString().Trim()
+                                                End If
+
+                                                If p_oCompDef.sOutLetMapping = "Y" Then
+                                                    sSQL = "SELECT SAPItemCode FROM SAP_POS_ITEM WHERE Entity = '" & p_oCompany.CompanyDB & "' AND POSItemCode = '" & sItemCode & "'"
+                                                    oDs = New DataSet()
+                                                    oDs = ExecuteSQLQueryDataset(sSQL, p_oCompDef.sIntDBName)
+                                                    If oDs.Tables(0).Rows.Count > 0 Then
+                                                        sItemCode = oDs.Tables(0).Rows(0)("SAPItemCode").ToString.Trim()
+
+                                                        dtItemDetails.DefaultView.RowFilter = "UpperItemCode = '" & sItemCode.ToUpper() & "'"
+                                                        If dtItemDetails.DefaultView.Count = 0 Then
+                                                            sErrDesc = "ItemCode not found in SAP/ItemCode :: " & sItemCode
+                                                            Console.WriteLine(sErrDesc)
+                                                            Call WriteToLogFile(sErrDesc, sFuncName)
+                                                            Throw New ArgumentException(sErrDesc)
+                                                        Else
+                                                            sItemCode = dtItemDetails.DefaultView.Item(0)(0).ToString().Trim()
+                                                        End If
+                                                    Else
+                                                        sErrDesc = "ItemCode not found in Item mapping for pos item " & sItemCode
+                                                        Throw New ArgumentException(sErrDesc)
+                                                    End If
+                                                End If
+
+                                                If sRevType.ToUpper() = "ZERO" Then
+                                                    If iCount > 1 Then
+                                                        oArInvoice.Lines.Add()
+                                                    End If
+                                                    oArInvoice.Lines.ItemCode = sItemCode
+                                                    oArInvoice.Lines.Quantity = CDbl(oDv(j)(16))
+                                                    oArInvoice.Lines.Price = CDbl(oDv(j)(15))
+                                                    oArInvoice.Lines.WarehouseCode = sWhseCode
+                                                    If Not (sCogsAcct = String.Empty) Then
+                                                        oArInvoice.Lines.AccountCode = sCogsAcct
+                                                    End If
+                                                    If Not (sVatGroup = String.Empty) Then
+                                                        oArInvoice.Lines.VatGroup = sVatGroup
+                                                    End If
+                                                    If Not (sOcrCode = String.Empty) Then
+                                                        oArInvoice.Lines.CostingCode = sOcrCode
+                                                        oArInvoice.Lines.COGSCostingCode = sOcrCode
+                                                    End If
+                                                    If p_oCompDef.sRevDeptMapping = "Y" Then
+                                                        If Not (sOcrCode2 = String.Empty) Then
+                                                            oArInvoice.Lines.CostingCode2 = sOcrCode2
+                                                            oArInvoice.Lines.COGSCostingCode2 = sOcrCode2
+                                                        End If
+                                                    End If
+
+                                                    If sBinLoc = String.Empty Then
+                                                        oArInvoice.Lines.BinAllocations.BinAbsEntry = 1
+                                                    Else
+                                                        oArInvoice.Lines.BinAllocations.BinAbsEntry = sBinLoc
+                                                    End If
+                                                    oArInvoice.Lines.BinAllocations.Quantity = CDbl(oDv(j)(16))
+                                                    oArInvoice.Lines.BinAllocations.AllowNegativeQuantity = SAPbobsCOM.BoYesNoEnum.tYES
+                                                    oArInvoice.Lines.BinAllocations.Add()
+
+                                                    iCount = iCount + 1
+                                                    bIsLineAdded = True
+                                                End If
+                                            End If
+                                        ElseIf sDiscCode <> "" Then
+                                            If iCount > 1 Then
+                                                oArInvoice.Lines.Add()
+                                            End If
+                                            dtItemDetails.DefaultView.RowFilter = "UpperItemCode = '" & sItemCode.ToUpper() & "'"
+                                            If dtItemDetails.DefaultView.Count = 0 Then
+                                                sErrDesc = "ItemCode not found in SAP/ItemCode :: " & sAdjustment
+                                                Console.WriteLine(sErrDesc)
+                                                Call WriteToLogFile(sErrDesc, sFuncName)
+                                                Throw New ArgumentException(sErrDesc)
+                                            Else
+                                                sItemCode = dtItemDetails.DefaultView.Item(0)(0).ToString().Trim()
+                                                sVatGroup = dtItemDetails.DefaultView.Item(0)(3).ToString().Trim()
+                                            End If
+
+                                            oArInvoice.Lines.ItemCode = sItemCode
+                                            oArInvoice.Lines.Quantity = CDbl(oDv(j)(16))
+                                            oArInvoice.Lines.Price = CDbl(oDv(j)(15))
+                                            oArInvoice.Lines.WarehouseCode = sWhseCode
+
+                                            If Not (sVatGroup = String.Empty) Then
+                                                oArInvoice.Lines.VatGroup = sVatGroup
+                                            End If
+                                            If Not (sOcrCode = String.Empty) Then
+                                                oArInvoice.Lines.CostingCode = sOcrCode
+                                                oArInvoice.Lines.COGSCostingCode = sOcrCode
+                                            End If
+                                            If p_oCompDef.sRevDeptMapping = "Y" Then
+                                                If Not (sOcrCode2 = String.Empty) Then
+                                                    oArInvoice.Lines.CostingCode2 = sOcrCode2
+                                                    oArInvoice.Lines.COGSCostingCode2 = sOcrCode2
+                                                End If
+                                            End If
+
+                                            If sBinLoc = String.Empty Then
+                                                oArInvoice.Lines.BinAllocations.BinAbsEntry = 1
+                                            Else
+                                                oArInvoice.Lines.BinAllocations.BinAbsEntry = sBinLoc
+                                            End If
+                                            oArInvoice.Lines.BinAllocations.Quantity = CDbl(oDv(j)(16))
+                                            oArInvoice.Lines.BinAllocations.AllowNegativeQuantity = SAPbobsCOM.BoYesNoEnum.tYES
+                                            oArInvoice.Lines.BinAllocations.Add()
+
+                                            'Discount amount is not null so createing additional line
+                                            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("DiscCode is not null. Creating additional line", sFuncName)
+
+                                            dtItemDetails.DefaultView.RowFilter = "UpperItemCode = '" & sDiscCode.ToUpper() & "'"
+                                            If dtItemDetails.DefaultView.Count = 0 Then
+                                                sErrDesc = "ItemCode not found in SAP/ItemCode :: " & sAdjustment
+                                                Console.WriteLine(sErrDesc)
+                                                Call WriteToLogFile(sErrDesc, sFuncName)
+                                                Throw New ArgumentException(sErrDesc)
+                                            Else
+                                                sDiscCode = dtItemDetails.DefaultView.Item(0)(0).ToString().Trim()
+                                                sVatGroup = dtItemDetails.DefaultView.Item(0)(3).ToString().Trim()
+                                            End If
+
+                                            oArInvoice.Lines.Add()
+                                            oArInvoice.Lines.ItemCode = sDiscCode
+                                            oArInvoice.Lines.Quantity = -1 * Math.Abs(CDbl(oDv(j)(16)))
+                                            oArInvoice.Lines.Price = CDbl(oDv(j)(19))
+                                            If Not (sVatGroup = String.Empty) Then
+                                                oArInvoice.Lines.VatGroup = sVatGroup
+                                            End If
+                                            If Not (sOcrCode = String.Empty) Then
+                                                oArInvoice.Lines.CostingCode = sOcrCode
+                                                oArInvoice.Lines.COGSCostingCode = sOcrCode
+                                            End If
+                                            If p_oCompDef.sRevDeptMapping = "Y" Then
+                                                If Not (sOcrCode2 = String.Empty) Then
+                                                    oArInvoice.Lines.CostingCode2 = sOcrCode2
+                                                    oArInvoice.Lines.COGSCostingCode2 = sOcrCode2
+                                                End If
+                                            End If
+                                            If sBinLoc = String.Empty Then
+                                                oArInvoice.Lines.BinAllocations.BinAbsEntry = 1
+                                            Else
+                                                oArInvoice.Lines.BinAllocations.BinAbsEntry = sBinLoc
+                                            End If
+                                            oArInvoice.Lines.BinAllocations.Quantity = CDbl(oDv(j)(16))
+                                            oArInvoice.Lines.BinAllocations.AllowNegativeQuantity = SAPbobsCOM.BoYesNoEnum.tYES
+                                            oArInvoice.Lines.BinAllocations.Add()
+
+                                            iCount = iCount + 1
+                                            bIsLineAdded = True
+                                        Else
+                                            If iCount > 1 Then
+                                                oArInvoice.Lines.Add()
+                                            End If
+                                            dtItemDetails.DefaultView.RowFilter = "UpperItemCode = '" & sItemCode.ToUpper() & "'"
+                                            If dtItemDetails.DefaultView.Count = 0 Then
+                                                sErrDesc = "ItemCode not found in SAP/ItemCode :: " & sAdjustment
+                                                Console.WriteLine(sErrDesc)
+                                                Call WriteToLogFile(sErrDesc, sFuncName)
+                                                Throw New ArgumentException(sErrDesc)
+                                            Else
+                                                sItemCode = dtItemDetails.DefaultView.Item(0)(0).ToString().Trim()
+                                                sVatGroup = dtItemDetails.DefaultView.Item(0)(3).ToString().Trim()
+                                            End If
+
+                                            oArInvoice.Lines.ItemCode = sItemCode
+                                            oArInvoice.Lines.Quantity = CDbl(oDv(j)(16))
+                                            oArInvoice.Lines.Price = CDbl(oDv(j)(15))
+                                            oArInvoice.Lines.WarehouseCode = sWhseCode
+                                            If Not (sVatGroup = String.Empty) Then
+                                                oArInvoice.Lines.VatGroup = sVatGroup
+                                            End If
+                                            If Not (sOcrCode = String.Empty) Then
+                                                oArInvoice.Lines.CostingCode = sOcrCode
+                                                oArInvoice.Lines.COGSCostingCode = sOcrCode
+                                            End If
+                                            If p_oCompDef.sRevDeptMapping = "Y" Then
+                                                If Not (sOcrCode2 = String.Empty) Then
+                                                    oArInvoice.Lines.CostingCode2 = sOcrCode2
+                                                    oArInvoice.Lines.COGSCostingCode2 = sOcrCode2
+                                                End If
+                                            End If
+                                            oArInvoice.Lines.LineTotal = CDbl(oDv(j)(17))
+                                            oArInvoice.Lines.UserFields.Fields.Item("U_Dept").Value = oDv(j)(11).ToString.Trim()
+                                            oArInvoice.Lines.UserFields.Fields.Item("U_DiscCode").Value = oDv(j)(12).ToString.Trim()
+                                            oArInvoice.Lines.UserFields.Fields.Item("U_DiscItem").Value = oDv(j)(13).ToString.Trim()
+                                            oArInvoice.Lines.UserFields.Fields.Item("U_SetMealCode").Value = oDv(j)(14).ToString.Trim()
+                                            oArInvoice.Lines.UserFields.Fields.Item("U_Adjustment").Value = oDv(0)(20).ToString.Trim()
+
+                                            If sBinLoc = String.Empty Then
+                                                oArInvoice.Lines.BinAllocations.BinAbsEntry = 1
+                                            Else
+                                                oArInvoice.Lines.BinAllocations.BinAbsEntry = sBinLoc
+                                            End If
+                                            oArInvoice.Lines.BinAllocations.Quantity = CDbl(oDv(j)(16))
+                                            oArInvoice.Lines.BinAllocations.AllowNegativeQuantity = SAPbobsCOM.BoYesNoEnum.tYES
+                                            oArInvoice.Lines.BinAllocations.Add()
+
+                                            iCount = iCount + 1
+                                            bIsLineAdded = True
+                                        End If
+                                    Next
+                                    '********************NEW LOGIC ENDS****************
+
+                                    If Not (oDv(0)(5).ToString.Trim() = String.Empty) Then
+                                        If Not (CDbl(oDv(0)(5)) = 0.0) Then
+                                            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Adding line for service charge", sFuncName)
+                                            If iCount > 1 Then
+                                                oArInvoice.Lines.Add()
+                                            End If
+                                            oArInvoice.Lines.ItemCode = p_oCompDef.sServChargeItem
+                                            oArInvoice.Lines.Quantity = 1
+                                            oArInvoice.Lines.Price = CDbl(oDv(0)(5))
+                                            iCount = iCount + 1
+                                        End If
+                                    End If
+                                    If Not (oDv(0)(7).ToString.Trim() = String.Empty) Then
+                                        If Not (CDbl(oDv(0)(7)) = 0.0) Then
+                                            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Adding line for rounding", sFuncName)
+                                            If iCount > 1 Then
+                                                oArInvoice.Lines.Add()
+                                            End If
+                                            oArInvoice.Lines.ItemCode = p_oCompDef.sRoundingItem
+                                            oArInvoice.Lines.Quantity = 1
+                                            oArInvoice.Lines.Price = CDbl(oDv(0)(7))
+                                            iCount = iCount + 1
+                                        End If
+                                    End If
+                                    If Not (oDv(0)(8).ToString.Trim() = String.Empty) Then
+                                        If Not (CDbl(oDv(0)(8)) = 0.0) Then
+                                            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Adding line for excess", sFuncName)
+                                            If iCount > 1 Then
+                                                oArInvoice.Lines.Add()
+                                            End If
+                                            oArInvoice.Lines.ItemCode = p_oCompDef.sExcessItem
+                                            oArInvoice.Lines.Quantity = 1
+                                            oArInvoice.Lines.Price = CDbl(oDv(0)(8))
+                                            iCount = iCount + 1
+                                        End If
+                                    End If
+                                    If Not (oDv(0)(9).ToString.Trim() = String.Empty) Then
+                                        If Not (CDbl(oDv(0)(9)) = 0.0) Then
+                                            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Adding line for Tips", sFuncName)
+                                            If iCount > 1 Then
+                                                oArInvoice.Lines.Add()
+                                            End If
+                                            oArInvoice.Lines.ItemCode = p_oCompDef.sTippingItem
+                                            oArInvoice.Lines.Quantity = 1
+                                            oArInvoice.Lines.Price = CDbl(oDv(0)(9))
+                                            iCount = iCount + 1
+                                        End If
+                                    End If
+
+                                    If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Attempting to add ar invoice document", sFuncName)
+
+                                    If oArInvoice.Add() <> 0 Then
+                                        sErrDesc = p_oCompany.GetLastErrorDescription
+                                        sErrDesc = sErrDesc.Replace("'", " ")
+
+                                        Dim sQuery As String
+                                        sQuery = "UPDATE SalesTransHeader SET Status = 'FAIL', ErrorMsg = '" & sErrDesc & "', SAPSyncDate = GETDATE() " & _
+                                                 " WHERE FileID = '" & sFileId & "' AND POSOutlet = '" & sOutlet & "' "
+                                        If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sQuery, sFuncName)
+                                        If ExecuteNonQuery(sQuery, sErrDesc) <> RTN_SUCCESS Then Throw New ArgumentException(sErrDesc)
+
+                                        Console.WriteLine("Error while adding A/R invoice document/ " & sErrDesc)
+                                        Throw New ArgumentException(sErrDesc)
+                                    Else
+                                        Dim iDocEntry As Integer
+                                        iDocEntry = p_oCompany.GetNewObjectKey()
+                                        System.Runtime.InteropServices.Marshal.ReleaseComObject(oArInvoice)
+
+                                        If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("A/R invoice created successfully. DocEntry is " & iDocEntry, sFuncName)
+
+                                        Console.WriteLine("A/R invoice document created successfully. DocEntry is :: " & iDocEntry)
+
+                                        Dim sQuery As String
+                                        sQuery = "UPDATE SalesTransHeader SET Status = 'SUCCESS', ErrorMsg = '', SAPSyncDate = GETDATE(), ARDocEntry = '" & iDocEntry & "' " & _
+                                                 " WHERE FileID = '" & sFileId & "' AND POSOutlet = '" & sOutlet & "' "
+                                        If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sQuery, sFuncName)
+                                        If ExecuteNonQuery(sQuery, sErrDesc) <> RTN_SUCCESS Then Throw New ArgumentException(sErrDesc)
+
+                                        If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Creating entry in Header backup table ", sFuncName)
+                                        sQuery = "INSERT INTO SalesTransHeader_Backup(FileID,POSNo,POSOutlet,DocDate,TotalGrossAmt,SvcCharge,GST,Rounding,Excess,Tips,Covers,RUpdated) " & _
+                                                 " VALUES('" & oDv(0)(0).ToString.Trim() & "','" & oDv(0)(1).ToString.Trim() & "','" & oDv(0)(2).ToString.Trim() & "', " & _
+                                                 " '" & oDv(0)(3).ToString.Trim() & "','" & oDv(0)(4).ToString.Trim() & "','" & oDv(0)(5).ToString.Trim() & "','" & oDv(0)(6).ToString.Trim() & "', " & _
+                                                 " '" & oDv(0)(7).ToString.Trim() & "','" & oDv(0)(8).ToString.Trim() & "','" & oDv(0)(9).ToString.Trim() & "','" & oDv(0)(18).ToString.Trim() & "','1') "
+                                        If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sQuery, sFuncName)
+                                        If ExecuteNonQuery(sQuery, sErrDesc) <> RTN_SUCCESS Then Throw New ArgumentException(sErrDesc)
+
+                                        sQuery = String.Empty
+                                        If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Creating entry in Transaction backup table ", sFuncName)
+                                        For j As Integer = 0 To oDv.Count - 1
+                                            If sQuery = "" Then
+                                                sQuery = "INSERT INTO SalesTransDetails_Backup VALUES('" & oDv(j)(0).ToString.Trim() & "','" & oDv(j)(3).ToString.Trim & "','" & oDv(j)(1).ToString.Trim() & "', " & _
+                                                         " '" & oDv(j)(2).ToString.Trim() & "','" & oDv(j)(11).ToString.Trim() & "','" & oDv(j)(10).ToString.Trim() & "','" & oDv(j)(12).ToString.Trim() & "', " & _
+                                                         " '" & oDv(j)(13).ToString.Trim() & "', '" & CDbl(oDv(j)(19)) & "','" & oDv(j)(20).ToString.Trim() & "','" & oDv(j)(14).ToString.Trim() & "', " & _
+                                                         " '" & CDbl(oDv(j)(15)) & "','" & CDbl(oDv(j)(16)) & "','" & CDbl(oDv(j)(17)) & "','1'); "
+                                            Else
+                                                sQuery = sQuery & " INSERT INTO SalesTransDetails_Backup VALUES('" & oDv(j)(0).ToString.Trim() & "','" & oDv(j)(3).ToString.Trim & "','" & oDv(j)(1).ToString.Trim() & "', " & _
+                                                         " '" & oDv(j)(2).ToString.Trim() & "','" & oDv(j)(11).ToString.Trim() & "','" & oDv(j)(10).ToString.Trim() & "','" & oDv(j)(12).ToString.Trim() & "', " & _
+                                                         " '" & oDv(j)(13).ToString.Trim() & "', '" & CDbl(oDv(j)(19)) & "','" & oDv(j)(20).ToString.Trim() & "','" & oDv(j)(14).ToString.Trim() & "', " & _
+                                                         " '" & CDbl(oDv(j)(15)) & "','" & CDbl(oDv(j)(16)) & "','" & CDbl(oDv(j)(17)) & "','1'); "
+                                            End If
+
+                                        Next
+                                        If sQuery <> "" Then
+                                            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sQuery, sFuncName)
+                                            If ExecuteNonQuery(sQuery, sErrDesc) <> RTN_SUCCESS Then Throw New ArgumentException(sErrDesc)
+                                        End If
+
+                                    End If
+                                End If
+
+                            End If
+
+                        End If
+
+                    End If
+                End If
+            Next
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(oRs)
+
+            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Completed with SUCCESS", sFuncName)
+            CreateARReserveInvoice = RTN_SUCCESS
+        Catch ex As Exception
+            sErrDesc = ex.Message
+            Call WriteToLogFile(sErrDesc, sFuncName)
+
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(oRs)
+
+            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Completed with ERROR", sFuncName)
+            CreateARReserveInvoice = RTN_ERROR
+        End Try
+    End Function
+
+    Private Function CreateDoDraft(ByVal oDv As DataView, ByVal sInvDocEntry As String, ByRef sErrDesc As String) As Long
+        Dim sFuncName As String = "CreateDoDraft"
+        Dim sSQL As String = String.Empty
+        Dim sQuery As String = String.Empty
+        Dim oDODraft As SAPbobsCOM.Documents
+        Dim oRecordSet As SAPbobsCOM.Recordset
+
+        Try
+            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Starting Function ", sFuncName)
+
+            oDODraft = p_oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oDrafts)
+            oRecordSet = p_oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset)
+
+            oDODraft.DocObjectCode = SAPbobsCOM.BoObjectTypes.oDeliveryNotes
+
+            sSQL = "SELECT * FROM ""OINV"" T0 INNER JOIN ""INV1"" T1 ON T1.""DocEntry"" = T0.""DocEntry"" WHERE T0.""DocEntry"" = '" & sInvDocEntry & "' "
+            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Executing SQL " & sSQL, sFuncName)
+            oRecordSet.DoQuery(sSQL)
+            If Not (oRecordSet.BoF And oRecordSet.EoF) Then
+                oRecordSet.MoveFirst()
+
+                oDODraft.CardCode = oRecordSet.Fields.Item("CardCode").Value
+                oDODraft.DocDate = oRecordSet.Fields.Item("DocDate").Value
+                oDODraft.NumAtCard = oRecordSet.Fields.Item("NumAtCard").Value
+                oDODraft.BPL_IDAssignedToInvoice = oRecordSet.Fields.Item("BPLId").Value
+                oDODraft.UserFields.Fields.Item("U_FileID").Value = oRecordSet.Fields.Item("U_FileID").Value
+                oDODraft.UserFields.Fields.Item("U_POSNo").Value = oRecordSet.Fields.Item("U_POSNo").Value
+                oDODraft.UserFields.Fields.Item("U_POSOutlet").Value = oRecordSet.Fields.Item("U_POSOutlet").Value
+                oDODraft.UserFields.Fields.Item("U_Covers").Value = oRecordSet.Fields.Item("U_Covers").Value
+                Dim iCount As Integer = 1
+                Do Until oRecordSet.EoF
+                    If iCount > 1 Then
+                        oDODraft.Lines.Add()
+                    End If
+
+                    oDODraft.Lines.ItemCode = oRecordSet.Fields.Item("ItemCode").Value
+                    oDODraft.Lines.Quantity = oRecordSet.Fields.Item("Quantity").Value
+                    oDODraft.Lines.Price = oRecordSet.Fields.Item("Price").Value
+                    oDODraft.Lines.LineTotal = oRecordSet.Fields.Item("LineTotal").Value
+                    oDODraft.Lines.WarehouseCode = oRecordSet.Fields.Item("WhseCode").Value
+                    oDODraft.Lines.VatGroup = oRecordSet.Fields.Item("VatGroup").Value
+                    oDODraft.Lines.CostingCode = oRecordSet.Fields.Item("OcrCode").Value
+                    oDODraft.Lines.COGSCostingCode = oRecordSet.Fields.Item("OcrCode").Value
+                    oDODraft.Lines.CostingCode2 = oRecordSet.Fields.Item("OcrCode2").Value
+                    oDODraft.Lines.COGSCostingCode2 = oRecordSet.Fields.Item("OcrCode2").Value
+                    oDODraft.Lines.AccountCode = oRecordSet.Fields.Item("AcctCode").Value
+
+                    oDODraft.Lines.UserFields.Fields.Item("U_Dept").Value = oRecordSet.Fields.Item("U_Dept").Value
+                    oDODraft.Lines.UserFields.Fields.Item("U_DiscCode").Value = oRecordSet.Fields.Item("U_DiscCode").Value
+                    oDODraft.Lines.UserFields.Fields.Item("U_DiscItem").Value = oRecordSet.Fields.Item("U_DiscItem").Value
+                    oDODraft.Lines.UserFields.Fields.Item("U_SetMealCode").Value = oRecordSet.Fields.Item("U_SetMealCode").Value
+                    oDODraft.Lines.UserFields.Fields.Item("U_Adjustment").Value = oRecordSet.Fields.Item("U_Adjustment").Value
+                    Dim sSetMeal As String = String.Empty
+                    sSetMeal = oRecordSet.Fields.Item("U_SetMealCode").Value
+                    If sSetMeal <> "" Then
+                        dtItemDetails.DefaultView.RowFilter = "UpperItemCode = '" & sSetMeal.ToUpper() & "'"
+                        If dtItemDetails.DefaultView.Count > 0 Then
+                            oDODraft.Lines.AccountCode = dtItemDetails.DefaultView.Item(0)(4).ToString().Trim()
+                        End If
+                    End If
+
+                    iCount = iCount + 1
+                    oRecordSet.MoveNext()
+                Loop
+
+                If oDODraft.Add() <> 0 Then
+                    sErrDesc = "Error " & p_oCompany.GetLastErrorDescription
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(oDODraft)
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(oRecordSet)
+                Else
+                    Dim iDocEntry As Integer
+                    iDocEntry = p_oCompany.GetNewObjectKey()
+
+                    Console.WriteLine("Delivery draft document successfully created. DocEntry is :: " & iDocEntry)
+                    If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Delivery draft document successfully created. DocEntry is :: " & iDocEntry, sFuncName)
+
+                End If
+            End If
+
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(oDODraft)
+
+            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Completed with SUCCESS", sFuncName)
+            CreateDoDraft = RTN_SUCCESS
+        Catch ex As Exception
+            sErrDesc = ex.Message()
+            Call WriteToLogFile(sErrDesc, sFuncName)
+            If p_iDebugMode = DEBUG_ON Then Call WriteToLogFile_Debug("Completed with ERROR", sFuncName)
+            CreateDoDraft = RTN_ERROR
         End Try
     End Function
 

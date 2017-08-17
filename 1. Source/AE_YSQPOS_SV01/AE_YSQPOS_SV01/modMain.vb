@@ -11,6 +11,7 @@
         Public sDBUser As String
         Public sDBPwd As String
 
+        Public sRefundGLAct As String
         Public sOutLetMapping As String
         Public sRevDeptMapping As String
         Public sTippingItem As String

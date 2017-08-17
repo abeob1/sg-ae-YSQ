@@ -19,6 +19,7 @@ Module modCommon
             oCompDef.sIntDBName = String.Empty
             oCompDef.sDBUser = String.Empty
             oCompDef.sDBPwd = String.Empty
+            oCompDef.sRefundGLAct = String.Empty
             oCompDef.sOutLetMapping = String.Empty
             oCompDef.sRevDeptMapping = String.Empty
             oCompDef.sTippingItem = String.Empty
@@ -48,6 +49,10 @@ Module modCommon
 
             If Not String.IsNullOrEmpty(ConfigurationManager.AppSettings("DBPwd")) Then
                 oCompDef.sDBPwd = ConfigurationManager.AppSettings("DBPwd")
+            End If
+
+            If Not String.IsNullOrEmpty(ConfigurationManager.AppSettings("RefundGLAct")) Then
+                oCompDef.sRefundGLAct = ConfigurationManager.AppSettings("RefundGLAct")
             End If
 
             If Not String.IsNullOrEmpty(ConfigurationManager.AppSettings("OutLetMapping")) Then

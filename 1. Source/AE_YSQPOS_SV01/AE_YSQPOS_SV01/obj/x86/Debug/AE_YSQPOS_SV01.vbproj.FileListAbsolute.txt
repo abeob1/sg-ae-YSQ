@@ -22,3 +22,9 @@ F:\Jeeva\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\bin\Debug\AE_YSQPOS_SV01.e
 F:\Jeeva\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\bin\Debug\AE_YSQPOS_SV01.pdb
 F:\Jeeva\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\bin\Debug\AE_YSQPOS_SV01.xml
 F:\Jeeva\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\bin\Debug\Interop.SAPbobsCOM.dll
+F:\Abeo Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\bin\Debug\AE_YSQPOS_SV01.exe.config
+F:\Abeo Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\obj\x86\Debug\Interop.SAPbobsCOM.dll
+F:\Abeo Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\obj\x86\Debug\AE_YSQPOS_SV01.vbproj.ResolveComReference.cache
+F:\Abeo Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\obj\x86\Debug\AE_YSQPOS_SV01.exe
+F:\Abeo Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\obj\x86\Debug\AE_YSQPOS_SV01.xml
+F:\Abeo Projects\YSQ POS\Source\AE_YSQPOS_SV01\AE_YSQPOS_SV01\obj\x86\Debug\AE_YSQPOS_SV01.pdb
